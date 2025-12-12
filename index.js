@@ -31,7 +31,6 @@ async function run() {
     
     app.post("/users", async (req, res) => {
       const userInfo = req.body;
-      userInfo.role ="buyer";
       userInfo.createdAt = new Date();
       const result = await userCollection.insertOne(userInfo);
       // res.send({ success: true, insertedId: result.insertedId });
@@ -47,6 +46,18 @@ async function run() {
       res.send(result)
     })
 
+    app.patch("/users/:id", async (req, res) => {
+      const id = req.params.id;
+      const updatedData = req.body;
+    
+      const result = await userCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updatedData }
+      );
+    
+      res.send(result);
+    });
+    
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
