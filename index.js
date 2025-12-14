@@ -1,3 +1,4 @@
+const { MongoClient, ServerApiVersion } = require('mongodb');
 const express = require('express');
 const cors = require('cors')
 require('dotenv').config()
@@ -7,8 +8,36 @@ const app = express();
 app.use(cors());
 app.use(express.json())
 
+const admin = require("firebase-admin");
+const decoded = Buffer.from(process.env.FB_KEY, 'base64').toString('utf8')
+const serviceAccount = JSON.parse(decoded);
 
-const { MongoClient, ServerApiVersion } = require('mongodb');
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+
+const verifyFBToken = async (req, res, next)=>{
+  const token = req.headers.authorization;
+
+  if(!token){
+    return res.status(401).send({message: 'unauthorize access'})
+  }
+
+  try{
+    const idToken = token.split(' ')[1]
+    const decoded = await admin.auth().verifyIdToken(idToken)
+    console.log("decoded info", decoded)
+    req.decoded_email = decoded.email;
+    next();
+  }
+  catch(error){
+    return res.status(401).send({message: 'unauthorize access'})
+  }
+}
+
+
+
 const uri = `mongodb+srv://${process.env.DB_HOST}:${process.env.DB_PASS}@cluster0.yfrfj.mongodb.net/?appName=Cluster0`;
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
@@ -26,14 +55,17 @@ async function run() {
     await client.connect();
     const database = client.db('blood')
     const userCollection = database.collection("user")
+    const requestCollection = database.collection('requests')
   
 
     
     app.post("/users", async (req, res) => {
       const userInfo = req.body;
       userInfo.createdAt = new Date();
+      userInfo.role = 'donor'
+      userInfo.status= 'active'
       const result = await userCollection.insertOne(userInfo);
-      // res.send({ success: true, insertedId: result.insertedId });
+     
       res.send(result)
     });
 
@@ -57,6 +89,16 @@ async function run() {
     
       res.send(result);
     });
+
+    // request 
+
+    app.post('/requests', verifyFBToken,  async(req,res)=>{
+      const data = req.body;
+      data.createdAt = new Date();
+      const result = await requestCollection.insertOne(data)
+      res.send(result)
+    })
+
     
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
