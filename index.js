@@ -5,6 +5,7 @@ require('dotenv').config()
 const port = process.env.PORT || 5000
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
 const crypto = require('crypto')
+const { ObjectId } = require('mongodb');
 
 
 const app = express();
@@ -59,6 +60,7 @@ async function run() {
     const database = client.db('blood')
     const userCollection = database.collection("user")
     const requestCollection = database.collection('requests')
+    const paymentCollection = database.collection('payments')
 
 
 
@@ -84,11 +86,11 @@ async function run() {
       console.log(result)
       res.send(result)
     })
-    app.patch('/update/user/status',verifyFBToken, async (req, res) => {
+    app.patch('/update/user/status', verifyFBToken, async (req, res) => {
       const { email, status } = req.query;
-      const query = {email: email};
-      const updateStatus ={
-        $set : {
+      const query = { email: email };
+      const updateStatus = {
+        $set: {
           status: status
         }
       }
@@ -99,13 +101,49 @@ async function run() {
       const id = req.params.id;
       const updatedData = req.body;
 
-    const result = await userCollection.updateOne(
+      const result = await userCollection.updateOne(
         { _id: new ObjectId(id) },
         { $set: updatedData }
-    );
+      );
 
       res.send(result);
     });
+
+    // volunteer 
+    app.patch('/users/make-volunteer/:email', verifyFBToken, async (req, res) => {
+      const email = req.params.email;
+
+
+      const adminUser = await userCollection.findOne({ email: req.decoded_email });
+
+      if (adminUser?.role !== 'admin') {
+        return res.status(403).send({ message: 'Forbidden access' });
+      }
+
+      const result = await userCollection.updateOne(
+        { email },
+        { $set: { role: 'volunteer' } }
+      );
+
+      res.send(result);
+    });
+
+
+    // Admin stats API
+    app.get("/admin-stats", async (req, res) => {
+      try {
+        const totalUsers = await userCollection.countDocuments({ role: "donor" });
+        const totalRequests = await requestCollection.countDocuments();
+        const payments = await paymentCollection.find().toArray();
+        const totalFunds = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+
+        res.send({ totalUsers, totalRequests, totalFunds });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to fetch stats" });
+      }
+    });
+
 
     // request 
 
@@ -116,56 +154,181 @@ async function run() {
       res.send(result)
     })
 
-    app.get('/donationrequest' , verifyFBToken, async(req, res)=>{
+    app.get('/donationrequest', verifyFBToken, async (req, res) => {
       const email = req.decoded_email
-      const size =Number(req.query.size);
+      const size = Number(req.query.size);
       const page = Number(req.query.page);
 
-      const query = {requesterEmail: email};
+      const query = { requesterEmail: email };
 
       const result = await requestCollection
-      .find(query)
-      .limit(size)
-      .skip(size*page)
-      .toArray();
+        .find(query)
+        .limit(size)
+        .skip(size * page)
+        .toArray();
 
       const totalRequest = await requestCollection.countDocuments(query);
 
-      res.send({request: result, totalRequest})
+      res.send({ request: result, totalRequest })
+    })
+
+    // all request 
+    app.get('/all-blood-donation-request', verifyFBToken, async (req, res) => {
+
+      const adminUser = await userCollection.findOne({
+        email: req.decoded_email
+      });
+
+      if (adminUser?.role !== 'admin') {
+        return res.status(403).send({ message: 'Forbidden' });
+      }
+
+      const result = await requestCollection.find().sort({ createdAt: -1 }).toArray();
+      res.send(result);
+    });
+
+    // donation status control 
+
+    app.patch("/requests/status/:id", async (req, res) => {
+      const id = req.params.id;
+      const { donationStatus } = req.body;
+
+      const filter = { _id: new ObjectId(id) };
+      const updateDoc = {
+        $set: { donationStatus }
+      };
+
+      const result = await requestCollection.updateOne(filter, updateDoc);
+      res.send(result);
+    });
+
+    // request delete 
+    app.delete("/requests/:id", verifyFBToken, async (req, res) => {
+      try {
+        const id = req.params.id;
+        const email = req.decoded_email;
+
+
+        const query = { _id: new ObjectId(id), requesterEmail: email };
+        const result = await requestCollection.deleteOne(query);
+
+        if (result.deletedCount === 1) {
+          res.send({ message: "Deleted successfully" });
+        } else {
+          res.status(403).send({ message: "Not authorized or request not found" });
+        }
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
+
+    // update donation 
+    const { ObjectId } = require("mongodb");
+
+    // Update donation request by ID
+    app.patch("/requests/:id", verifyFBToken, async (req, res) => {
+      const id = req.params.id;
+      const updatedData = req.body;
+
+      try {
+        const result = await requestCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updatedData }
+        );
+        res.send({ success: true, modifiedCount: result.modifiedCount });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ success: false, message: "Internal Server Error" });
+      }
+    });
+
+
+    // search 
+
+    app.get('/search', async (req, res) => {
+      const { bloodGroup, district, upozilla } = req.query;
+
+      const query = {};
+
+      if (!query) {
+        return;
+      }
+      if (bloodGroup) {
+        const fixed = bloodGroup.replace(/ /g, "+").trim();
+        query.bloodGroup = fixed;
+
+      }
+      if (district) {
+        query.recipientDistrict = district;
+      }
+      if (upozilla) {
+        query.recipientUpozilla = upozilla;
+      }
+      const result = await requestCollection.find(query).toArray();
+      res.send(result)
     })
 
     // payments 
 
-    app.post('/create-payment-checkout', async(req,res)=>{
+    app.post('/create-payment-checkout', async (req, res) => {
       const information = req.body;
       const amount = parseInt(information.fundAmount) * 100;
 
-      
-        const session = await stripe.checkout.sessions.create({
-         
-          line_items: [
-            {
-              price_data : {
-                currency : 'usd',
-                unit_amount: amount,
-                product_data : {
-                  name: 'please donate'
-                }
-              },
-              quantity: 1,
-            },
-          ],
-          mode: 'payment',
-          metadata: {
-            fundName : information?.fundName
-          },
-          customer_email: information.fundEmail,
-          success_url: `${process.env.SITE_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-          cancel_url: `${process.env.SITE_DOMAIN}/payment-cancelled`
-        });
 
-        res.send({url: session.url})
-      
+      const session = await stripe.checkout.sessions.create({
+
+        line_items: [
+          {
+            price_data: {
+              currency: 'usd',
+              unit_amount: amount,
+              product_data: {
+                name: 'please donate'
+              }
+            },
+            quantity: 1,
+          },
+        ],
+        mode: 'payment',
+        metadata: {
+          fundName: information?.fundName
+        },
+        customer_email: information.fundEmail,
+        success_url: `${process.env.SITE_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.SITE_DOMAIN}/payment-cancelled`
+      });
+
+      res.send({ url: session.url })
+
+    })
+
+
+    app.post('/success-payment', async (req, res) => {
+      const { session_id } = req.query;
+      const session = await stripe.checkout.sessions.retrieve(session_id);
+      console.log(session)
+
+      const transactionId = session.payment_intent;
+
+      const isPaymentExist = await paymentCollection.findOne({ transactionId })
+
+      if (isPaymentExist) {
+        return
+      }
+
+      if (session.payment_status == 'paid') {
+        const paymentInfo = {
+          amount: session.amount_total / 100,
+          currency: session.currency,
+          fundEmail: session.customer_email,
+          payment_status: session.payment_status,
+          paidAt: new Date()
+        }
+
+        const result = await paymentCollection.insertOne(paymentInfo)
+        return res.send(result)
+      }
     })
 
     // Send a ping to confirm a successful connection
