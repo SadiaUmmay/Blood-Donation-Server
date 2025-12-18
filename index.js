@@ -17,22 +17,22 @@ admin.initializeApp({
 });
 
 
-const verifyFBToken = async (req, res, next)=>{
+const verifyFBToken = async (req, res, next) => {
   const token = req.headers.authorization;
 
-  if(!token){
-    return res.status(401).send({message: 'unauthorize access'})
+  if (!token) {
+    return res.status(401).send({ message: 'unauthorize access' })
   }
 
-  try{
+  try {
     const idToken = token.split(' ')[1]
     const decoded = await admin.auth().verifyIdToken(idToken)
     console.log("decoded info", decoded)
     req.decoded_email = decoded.email;
     next();
   }
-  catch(error){
-    return res.status(401).send({message: 'unauthorize access'})
+  catch (error) {
+    return res.status(401).send({ message: 'unauthorize access' })
   }
 }
 
@@ -56,50 +56,81 @@ async function run() {
     const database = client.db('blood')
     const userCollection = database.collection("user")
     const requestCollection = database.collection('requests')
-  
 
-    
+
+
     app.post("/users", async (req, res) => {
       const userInfo = req.body;
       userInfo.createdAt = new Date();
       userInfo.role = 'donor'
-      userInfo.status= 'active'
+      userInfo.status = 'active'
       const result = await userCollection.insertOne(userInfo);
-     
       res.send(result)
     });
 
-    app.get('/users/role/:email', async (req, res)=>{
-      const {email} = req.params
+    app.get('/users', verifyFBToken, async (req, res) => {
+      const result = await userCollection.find().toArray();
+      res.status(200).send(result)
+    })
 
-      const query = {email: email}
+    app.get('/users/role/:email', async (req, res) => {
+      const { email } = req.params
+
+      const query = { email: email }
       const result = await userCollection.findOne(query)
       console.log(result)
       res.send(result)
     })
-
+    app.patch('/update/user/status',verifyFBToken, async (req, res) => {
+      const { email, status } = req.query;
+      const query = {email: email};
+      const updateStatus ={
+        $set : {
+          status: status
+        }
+      }
+      const result = await userCollection.updateOne(query, updateStatus)
+      res.send(result)
+    })
     app.patch("/users/:id", async (req, res) => {
       const id = req.params.id;
       const updatedData = req.body;
-    
-      const result = await userCollection.updateOne(
+
+    const result = await userCollection.updateOne(
         { _id: new ObjectId(id) },
         { $set: updatedData }
-      );
-    
+    );
+
       res.send(result);
     });
 
     // request 
 
-    app.post('/requests', verifyFBToken,  async(req,res)=>{
+    app.post('/requests', verifyFBToken, async (req, res) => {
       const data = req.body;
       data.createdAt = new Date();
       const result = await requestCollection.insertOne(data)
       res.send(result)
     })
 
-    
+    app.get('/donationrequest' , verifyFBToken, async(req, res)=>{
+      const email = req.decoded_email
+      const size =Number(req.query.size);
+      const page = Number(req.query.page);
+
+      const query = {requesterEmail: email};
+
+      const result = await requestCollection
+      .find(query)
+      .limit(size)
+      .skip(size*page)
+      .toArray();
+
+      const totalRequest = await requestCollection.countDocuments(query);
+
+      res.send({request: result, totalRequest})
+    })
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
@@ -110,9 +141,9 @@ async function run() {
 }
 run().catch(console.dir);
 
-app.get('/', (req,res)=>{
-    res.send("hello, Blood Donation Server")
+app.get('/', (req, res) => {
+  res.send("hello, Blood Donation Server")
 })
-app.listen(port,()=>{
-    console.log(`server is running on ${port}`);
+app.listen(port, () => {
+  console.log(`server is running on ${port}`);
 })
