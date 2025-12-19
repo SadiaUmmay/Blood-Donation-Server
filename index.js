@@ -61,7 +61,7 @@ async function run() {
     const userCollection = database.collection("user")
     const requestCollection = database.collection('requests')
     const paymentCollection = database.collection('payments')
-
+    const donationRequestCollection = database.collection("donationRequests");
 
 
     app.post("/users", async (req, res) => {
@@ -128,6 +128,30 @@ async function run() {
       res.send(result);
     });
 
+    // admin 
+    app.patch('/users/make-admin/:email', verifyFBToken, async (req, res) => {
+      const email = req.params.email;
+
+      const adminUser = await userCollection.findOne({
+        email: req.decoded_email
+      });
+
+      if (adminUser?.role !== 'admin') {
+        return res.status(403).send({ message: 'Forbidden access' });
+      }
+
+      const result = await userCollection.updateOne(
+        { email },
+        { $set: { role: 'admin' } }
+      );
+
+      if (result.matchedCount === 0) {
+        return res.status(404).send({ message: 'User not found' });
+      }
+
+      res.send(result);
+    });
+
 
     // Admin stats API
     app.get("/admin-stats", async (req, res) => {
@@ -179,23 +203,67 @@ async function run() {
         email: req.decoded_email
       });
 
-      if (adminUser?.role !== 'admin') {
+      if (!['admin', 'volunteer'].includes(adminUser?.role)) {
         return res.status(403).send({ message: 'Forbidden' });
       }
+
 
       const result = await requestCollection.find().sort({ createdAt: -1 }).toArray();
       res.send(result);
     });
 
-    // donation status control 
+    // Public pending donation requests
+    app.get('/donation-requests', async (req, res) => {
+      try {
+        const requests = await requestCollection
+          .find({ donationStatus: 'pending' })
+          .sort({ createdAt: -1 })
+          .toArray();
 
+        res.send(requests);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ error: 'Failed to fetch requests' });
+      }
+    });
+
+    // donation status pending => inprogress
+
+    app.patch("/requests/status/:id", verifyFBToken, async (req, res) => {
+      const { status } = req.body;
+    
+      const result = await requestCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { donationStatus: status } }
+      );
+    
+      res.send(result);
+    });
+    
+
+    //donation details
+
+    app.get("/donation-requests/:id", async (req, res) => {
+      const { id } = req.params;
+
+      const request = await requestCollection.findOne({
+        _id: ObjectId.isValid(id) ? new ObjectId(id) : id
+      });
+
+      res.send(request);
+
+
+    });
+
+
+    // donation status control
     app.patch("/requests/status/:id", async (req, res) => {
       const id = req.params.id;
-      const { donationStatus } = req.body;
+      const { status } = req.body; // 👈 status নাও
 
       const filter = { _id: new ObjectId(id) };
       const updateDoc = {
-        $set: { donationStatus }
+        $set: { donationStatus: status }
       };
 
       const result = await requestCollection.updateOne(filter, updateDoc);
@@ -268,6 +336,17 @@ async function run() {
       const result = await requestCollection.find(query).toArray();
       res.send(result)
     })
+    // fund?
+    app.get("/payments", verifyFBToken, async (req, res) => {
+      try {
+        const payments = await paymentCollection.find().sort({ paidAt: -1 }).toArray();
+        res.send(payments);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ error: "Failed to fetch payments" });
+      }
+    });
+
 
     // payments 
 
