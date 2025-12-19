@@ -229,15 +229,32 @@ async function run() {
 
     // donation status pending => inprogress
 
-    app.patch("/requests/status/:id", verifyFBToken, async (req, res) => {
-      const { status } = req.body;
+    app.patch("/requests/:id/donate", verifyFBToken, async (req, res) => {
+      const id = req.params.id;
+      const { donorName, donorEmail } = req.body;
     
-      const result = await requestCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
-        { $set: { donationStatus: status } }
-      );
+      try {
+        const result = await requestCollection.updateOne(
+          { _id: new ObjectId(id), donationStatus: "pending" },
+          {
+            $set: {
+              donationStatus: "inprogress",
+              donorName,
+              donorEmail,
+              donatedAt: new Date(),
+            },
+          }
+        );
     
-      res.send(result);
+        if (result.modifiedCount === 0) {
+          return res.send({ success: false });
+        }
+    
+        res.send({ success: true });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ success: false });
+      }
     });
     
 
@@ -259,7 +276,7 @@ async function run() {
     // donation status control
     app.patch("/requests/status/:id", async (req, res) => {
       const id = req.params.id;
-      const { status } = req.body; // 👈 status নাও
+      const { status } = req.body; 
 
       const filter = { _id: new ObjectId(id) };
       const updateDoc = {
@@ -336,7 +353,9 @@ async function run() {
       const result = await requestCollection.find(query).toArray();
       res.send(result)
     })
-    // fund?
+
+    // fund
+
     app.get("/payments", verifyFBToken, async (req, res) => {
       try {
         const payments = await paymentCollection.find().sort({ paidAt: -1 }).toArray();
@@ -353,17 +372,15 @@ async function run() {
     app.post('/create-payment-checkout', async (req, res) => {
       const information = req.body;
       const amount = parseInt(information.fundAmount) * 100;
-
-
+    
       const session = await stripe.checkout.sessions.create({
-
         line_items: [
           {
             price_data: {
               currency: 'usd',
               unit_amount: amount,
               product_data: {
-                name: 'please donate'
+                name: 'Blood Donation Fund'
               }
             },
             quantity: 1,
@@ -371,47 +388,67 @@ async function run() {
         ],
         mode: 'payment',
         metadata: {
-          fundName: information?.fundName
+          fundName: information?.fundName || "Anonymous", 
         },
         customer_email: information.fundEmail,
         success_url: `${process.env.SITE_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.SITE_DOMAIN}/payment-cancelled`
       });
+    
+      res.send({ url: session.url });
+    });
+    
+    
+  //  success-payment route
 
-      res.send({ url: session.url })
-
-    })
-
-
-    app.post('/success-payment', async (req, res) => {
-      const { session_id } = req.query;
+  app.post('/success-payment', async (req, res) => {
+    const { session_id } = req.query;
+  
+    if (!session_id) return res.status(400).send({ message: "Session ID missing" });
+  
+    try {
       const session = await stripe.checkout.sessions.retrieve(session_id);
-      console.log(session)
-
+      console.log("Stripe session:", session);
+  
       const transactionId = session.payment_intent;
-
-      const isPaymentExist = await paymentCollection.findOne({ transactionId })
-
+      if (!transactionId) return res.status(400).send({ message: "Invalid transaction" });
+  
+      // Check if payment already exists
+      const isPaymentExist = await paymentCollection.findOne({ transactionId });
       if (isPaymentExist) {
-        return
+        return res.send({ success: true, message: "Payment already exists", payment: isPaymentExist });
       }
-
-      if (session.payment_status == 'paid') {
+  
+      if (session.payment_status === 'paid') {
         const paymentInfo = {
+          transactionId,
           amount: session.amount_total / 100,
           currency: session.currency,
           fundEmail: session.customer_email,
+          fundName: session.metadata?.fundName || "Anonymous",
           payment_status: session.payment_status,
           paidAt: new Date()
-        }
-
-        const result = await paymentCollection.insertOne(paymentInfo)
-        return res.send(result)
+        };
+  
+        const result = await paymentCollection.insertOne(paymentInfo);
+  
+        return res.send({ success: true, payment: paymentInfo });
       }
-    })
+  
+      res.status(400).send({ success: false, message: "Payment not completed" });
+    } catch (error) {
+      console.error(error);
+      res.status(500).send({ success: false, message: "Server error" });
+    }
+  });
+  
+
+    
+    
 
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
+
+     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } finally {
     // Ensures that the client will close when you finish/error
