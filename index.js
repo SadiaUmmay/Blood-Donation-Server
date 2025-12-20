@@ -58,7 +58,7 @@ async function run() {
     // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
     const database = client.db('blood')
-    const userCollection = database.collection("user")
+    const userCollection = database.collection("users")
     const requestCollection = database.collection('requests')
     const paymentCollection = database.collection('payments')
     const donationRequestCollection = database.collection("donationRequests");
@@ -66,13 +66,22 @@ async function run() {
 
     app.post("/users", async (req, res) => {
       const userInfo = req.body;
+      
+      // Clean up data before saving
       userInfo.createdAt = new Date();
-      userInfo.role = 'donor'
-      userInfo.status = 'active'
+      userInfo.role = 'donor';
+      userInfo.status = 'active';
+      
       const result = await userCollection.insertOne(userInfo);
-      res.send(result)
+      
+      // Combine the generated _id with the userInfo to return the full object
+      const newUser = {
+        ...userInfo,
+        _id: result.insertedId
+      };
+      
+      res.status(201).send(newUser); 
     });
-
     app.get('/users', verifyFBToken, async (req, res) => {
       const result = await userCollection.find().toArray();
       res.status(200).send(result)
@@ -291,16 +300,22 @@ async function run() {
     app.delete("/requests/:id", verifyFBToken, async (req, res) => {
       try {
         const id = req.params.id;
-        const email = req.decoded_email;
-
-
-        const query = { _id: new ObjectId(id), requesterEmail: email };
-        const result = await requestCollection.deleteOne(query);
-
-        if (result.deletedCount === 1) {
-          res.send({ message: "Deleted successfully" });
+        const userEmail = req.decoded_email;
+    
+        // 1. Find the user to check their role
+        const user = await userCollection.findOne({ email: userEmail });
+        const request = await requestCollection.findOne({ _id: new ObjectId(id) });
+    
+        if (!request) {
+          return res.status(404).send({ message: "Request not found" });
+        }
+    
+        // 2. Logic: If Admin OR the owner of the request, allow delete
+        if (user?.role === 'admin' || request.requesterEmail === userEmail) {
+          const result = await requestCollection.deleteOne({ _id: new ObjectId(id) });
+          return res.send({ message: "Deleted successfully", deletedCount: result.deletedCount });
         } else {
-          res.status(403).send({ message: "Not authorized or request not found" });
+          return res.status(403).send({ message: "Not authorized to delete this" });
         }
       } catch (err) {
         console.error(err);
